@@ -3,7 +3,7 @@ title: "Anatomical alteration after intensive PE with Ketamin/Midazolam agumanta
 output: html_notebook
 ---
 
-This notebook is extension to the jupiter notebook that extracts the results of FreeSurfer and TRACULA analysis
+This notebook is extension to the jupiter notebook that extracts the results from TRACULA analysis
 
 Load libraries 
 
@@ -68,15 +68,6 @@ for (i in 1:nrow(WM)){
   
 ```
 
-FA analysis
-
-```{r}
-unc_ANOVA <- lmer(FA ~ med_cond * Ses + gender + age + TMI + (1|Sub), data = WM)
-
-print(anova(unc_ANOVA))
-print(confint(unc_ANOVA))
-```
-
 Plots
 ```{r}
 simple_model <- lmer(FA ~ gender + age + TMI + (1|Sub), data = WM)
@@ -85,42 +76,18 @@ WM$res <- resid(simple_model)
 ggplot(WM, aes(x=Session, y=res, color=med_cond)) + geom_boxplot() + theme_minimal()  + theme(legend.position = "none") + facet_grid(~DrugN) + ylab("FA controlling for age, gender and motion")
 ```
 
-Significant reduction in FA in the Ketamine group between session 1 and session 2 that persisted into the follow up
-
-```{r}
-groups <- c(1, 0)
-
-for (group in groups){
-  drug <- subset(WM, med_cond == group)
-  drugANOVA <- lmer(FA ~ Ses + gender + age + TMI + (1|Sub), data = drug)
-  
-  print(drug$DrugN[1])
-  print(anova(drugANOVA))
-  print(confint(drugANOVA))
-  print(emmeans(drugANOVA, list(pairwise ~ Ses), adjust = "tukey"))
-}
-```
-
 Bayes model
 
 ```{r, include=FALSE}
-#bModel <- brm(FA ~ med_cond * Ses + gender + age + TMI + (1|Sub), data = WM, 
-#              iter = 4000, warmup = 500, chains = 8, cores = 8, seed = 1985)
-
-#bModel_p <- brm(FA ~ med_cond * Ses + gender + age + TMI + (1|Sub), data = WM, family = gaussian(), prior = set_prior('normal(0, 3)'),
-#              iter = 4000, warmup = 500, chains = 8, cores = 8, seed = 1985)
-```
-
-```{r, include=FALSE}
-bModel_p <- brm(FA ~ med_cond * Ses + gender + age + TMI + (1|Sub), data = WM, family = student(), prior = set_prior('normal(0, 1)'),
-              iter = 2000, warmup = 1000, chains = 4, cores = 4, seed = 2019)
+bModel_p <- brm(FA ~ med_cond * Ses + gender + age + TMI + (1|Sub), data = WM, 
+                family = student(), 
+                prior = set_prior('normal(0, 1)'),
+                iter = 2000, warmup = 1000, chains = 4, cores = 4, seed = 2019)
 ```
 
 ```{r}
-#print(summary(bModel, prob = .89) %>% print(digits = 4))
-
 print(summary(bModel_p, prob = .89) %>% print(digits = 4))
-print(coda::HPDinterval(as.mcmc(bModel_p, combine_chains = TRUE), prob = .89))
+#print(coda::HPDinterval(as.mcmc(bModel_p, combine_chains = TRUE), prob = .89))
 ```
 
 ```{r}
