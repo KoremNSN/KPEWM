@@ -1,0 +1,449 @@
+---
+title: "Anatomical alteration after intensive PE with Ketamin/Midazolam agumantaion"
+output: html_notebook
+---
+
+This notebook is extension to the jupiter notebook that extracts the results of FreeSurfer and TRACULA analysis
+
+Load libraries 
+
+```{r include=FALSE}
+library("dplyr")
+library("ggplot2")
+library("lme4")
+library("lmerTest")
+library("emmeans")
+library("tidyr")
+library("rlist")
+library("PerformanceAnalytics")
+library("brms")
+```
+
+load WM
+
+```{r}
+setwd('/media/Data/Lab_Projects/KPE_PTSD_Project/other/Tracula')
+WM      <-  read.table('KPE_tracula_Feb.csv', header = T, sep = ",")
+```
+
+Create database for analysis
+
+```{r}
+session <-  c(1, 2, 3)
+tracts  <-  'rh.unc'
+subs = c(1315, 1419)
+
+WM <- subset(WM, (Tract %in% tracts) & (Ses %in% session))
+WM <- subset(WM, !(Sub %in% subs))
+
+# change data type for analysis
+WM$med_cond  <- as.factor(WM$med_cond)
+WM$Ses       <- as.factor(WM$Ses)
+
+# add names for graphs
+WM$DrugN[WM$med_cond==1] <- "Ketamine"
+WM$DrugN[WM$med_cond==0] <- "Midazolam"
+
+WM$Session[WM$Ses==1] <- "Day 1"
+WM$Session[WM$Ses==2] <- "Day 7"
+WM$Session[WM$Ses==3] <- "Followup"
+```
+
+Add a single motion parameter for WM analysis based on Yendiki et al., 2014
+
+```{r}
+m <- c(rep(0,2))
+Q <- c(rep(0,4))
+para <- c(rep(0,2))
+
+m <- c(mean    (WM$AvgTranslation),    mean(WM$AvgRotation))
+Q <- c(quantile(WM$AvgTranslation)[2], quantile(WM$AvgRotation)[2],
+       quantile(WM$AvgTranslation)[4], quantile(WM$AvgRotation)[4])
+
+para <- c(Q[3]-Q[1], Q[4]-Q[2])
+
+for (i in 1:nrow(WM)){
+  WM$TMI[i] <- sum((WM$AvgTranslation[i]-m[1])/para[1],(WM$AvgRotation[i]-m[2])/para[2])
+}
+  
+```
+
+FA analysis
+
+```{r}
+unc_ANOVA <- lmer(FA ~ med_cond * Ses + gender + age + TMI + (1|Sub), data = WM)
+
+print(anova(unc_ANOVA))
+print(confint(unc_ANOVA))
+```
+
+Plots
+```{r}
+simple_model <- lmer(FA ~ gender + age + TMI + (1|Sub), data = WM)
+WM$res <- resid(simple_model)
+
+ggplot(WM, aes(x=Session, y=res, color=med_cond)) + geom_boxplot() + theme_minimal()  + theme(legend.position = "none") + facet_grid(~DrugN) + ylab("FA controlling for age, gender and motion")
+```
+
+Significant reduction in FA in the Ketamine group between session 1 and session 2 that persisted into the follow up
+
+```{r}
+groups <- c(1, 0)
+
+for (group in groups){
+  drug <- subset(WM, med_cond == group)
+  drugANOVA <- lmer(FA ~ Ses + gender + age + TMI + (1|Sub), data = drug)
+  
+  print(drug$DrugN[1])
+  print(anova(drugANOVA))
+  print(confint(drugANOVA))
+  print(emmeans(drugANOVA, list(pairwise ~ Ses), adjust = "tukey"))
+}
+```
+
+Bayes model
+
+```{r, include=FALSE}
+#bModel <- brm(FA ~ med_cond * Ses + gender + age + TMI + (1|Sub), data = WM, 
+#              iter = 4000, warmup = 500, chains = 8, cores = 8, seed = 1985)
+
+#bModel_p <- brm(FA ~ med_cond * Ses + gender + age + TMI + (1|Sub), data = WM, family = gaussian(), prior = set_prior('normal(0, 3)'),
+#              iter = 4000, warmup = 500, chains = 8, cores = 8, seed = 1985)
+```
+
+```{r, include=FALSE}
+bModel_p <- brm(FA ~ med_cond * Ses + gender + age + TMI + (1|Sub), data = WM, family = student(), prior = set_prior('normal(0, 1)'),
+              iter = 2000, warmup = 1000, chains = 4, cores = 4, seed = 2019)
+```
+
+```{r}
+#print(summary(bModel, prob = .89) %>% print(digits = 4))
+
+print(summary(bModel_p, prob = .89) %>% print(digits = 4))
+print(coda::HPDinterval(as.mcmc(bModel_p, combine_chains = TRUE), prob = .89))
+```
+
+```{r}
+plot(conditional_effects(bModel_p, prob = .89), ask = F)
+```
+
+
+```{r, include=FALSE}
+Ket <- subset(WM, med_cond == 1)
+Mid <- subset(WM, med_cond == 0)
+KetModel_p <- brm(FA ~ Ses + gender + age + TMI + (1|Sub), data = Ket, family = student(), prior = set_prior('normal(0, 1)'),
+              iter = 2000, warmup = 1000, chains = 4, cores = 4, seed = 2019)
+MidModel_p <- brm(FA ~ Ses + gender + age + TMI + (1|Sub), data = Mid, family = student(), prior = set_prior('normal(0, 1)'),
+              iter = 2000, warmup = 1000, chains = 4, cores = 4, seed = 2019)
+```
+
+
+```{r}
+print(summary(KetModel_p, prob = .89) %>% print(digits = 4))
+print(coda::HPDinterval(as.mcmc(KetModel_p, combine_chains = TRUE), prob = .89))
+
+print(summary(MidModel_p, prob = .89) %>% print(digits = 4))
+print(coda::HPDinterval(as.mcmc(MidModel_p, combine_chains = TRUE), prob = .89))
+
+```
+
+
+
+Function
+
+```{r}
+turn_to_wide <- function(db, columns, ses, db_name){
+  sessions <- ses[ses!=1]
+  return_col = c('Sub')
+  wide <- db[columns]
+  wide <- spread(wide, Ses, res)
+  
+  for(s in sessions){
+    s_str <- toString(s)
+    n = paste(db_name, s_str, '1', sep = '_')
+    wide[n] <- wide[s_str] - wide['1']
+    return_col <- list.append(return_col, n)
+  }
+  return (wide[return_col])
+}
+```
+
+Create Delta's for correlation matrix
+
+```{r}
+columns <- c('Sub', 'Ses', 'res')
+
+corr_db <- turn_to_wide(WM,   columns, session, 'rh_unc')
+```
+
+load functional files
+
+```{r}
+rest <- read.table('RS_conn_3Sessions.csv', header = T, sep = ",")
+pcl <- read.table('pclitems_Feb.csv', header = T, sep = ",")
+```
+
+Create Deltas and select fields
+
+```{r}
+rest_columns <- c('amg_vmPFCant', 'hippAnt_vmPFCant')
+end_col <- c('Sub')
+
+sessions = c('2','3')
+for (col in rest_columns){
+  for (s in sessions){
+    n <- paste(col, s, '1', sep = '_')
+    n_s <- paste(col, s, sep = '')
+    n_1 <- paste(col, '1', sep = '')
+    rest[n] <- rest[n_s]-rest[n_1] 
+    end_col <- list.append(end_col, n)
+  }
+}
+rest <- rest[end_col]
+```
+
+Combine rest, task and anatomical data
+
+```{r}
+corr_db <- merge(merge(
+              corr_db, 
+              rest,   by = 'Sub'),
+              pcl,   by = 'Sub')
+```
+
+Remove non numeric columns
+
+```{r}
+drop <- c('Sub', 'group', 'age')
+'%ni%' <- Negate('%in%')
+n <- names(corr_db)
+n = n[n %ni% drop]
+
+corr_db_clean <- corr_db[n]
+
+sapply(corr_db_clean, class)
+```
+
+Correlation matrix
+```{r}
+part <- c('rh_unc_2_1', 'rh_unc_3_1', 'amg_vmPFCant_2_1', 'amg_vmPFCant_3_1', 'hippAnt_vmPFCant_2_1', 'hippAnt_vmPFCant_3_1', 'Re.experiencing_2', 'Re.experiencing_3')
+unc <- corr_db_clean[part]
+
+chart.Correlation(unc, histogram=TRUE, pch=19)
+```
+
+Bayes correlations
+
+```{r}
+bayes_corr <- function(x, y){
+  newdata <- data_frame(x, y)
+  bCorr <- brm(data = newdata, 
+      family = student,
+      mvbind(x, y) ~ 1,
+      prior = c(prior(gamma(2, .1), class = nu),
+                prior(normal(0, 1), class = Intercept),
+                prior(normal(0, 1), class = sigma, resp = x),
+                prior(normal(0, 1), class = sigma, resp = y),
+                prior(lkj(1), class = rescor)),
+      iter = 2000, warmup = 1000, chains = 4, cores = 4, seed = 2015)
+  return (bCorr)
+}
+```
+
+Correlations between changes in re-experiencing symptoms and changes in RH UNC FA
+
+```{r, include=FALSE}
+reexp22 <- bayes_corr(corr_db_clean$rh_unc_2_1, corr_db_clean$Re.experiencing_2)
+reexp23 <- bayes_corr(corr_db_clean$rh_unc_2_1, corr_db_clean$Re.experiencing_3)
+reexp32 <- bayes_corr(corr_db_clean$rh_unc_3_1, corr_db_clean$Re.experiencing_2)
+reexp33 <- bayes_corr(corr_db_clean$rh_unc_3_1, corr_db_clean$Re.experiencing_3)
+```
+
+```{r}
+print("UNC post treatment - Reexp post treatment")
+summary(reexp22, prob = .89)
+print(coda::HPDinterval(as.mcmc(reexp22, combine_chains = TRUE), prob = .89))
+
+print("UNC post treatment - Reexp follow up")
+summary(reexp23, prob = .89)
+print(coda::HPDinterval(as.mcmc(reexp23, combine_chains = TRUE), prob = .89))
+
+print("UNC follow up - Reexp post treatment")
+summary(reexp32, prob = .89)
+print(coda::HPDinterval(as.mcmc(reexp32, combine_chains = TRUE), prob = .89))
+
+print("UNC follow up - Reexp follow up")
+summary(reexp33, prob = .89)
+print(coda::HPDinterval(as.mcmc(reexp33, combine_chains = TRUE), prob = .89))
+
+```
+
+Correlations between changes in Amygdala vmPFC connectivity and changes in RH UNC FA
+
+```{r, include=FALSE}
+amy22 <- bayes_corr(corr_db_clean$rh_unc_2_1, corr_db_clean$amg_vmPFCant_2_1)
+amy23 <- bayes_corr(corr_db_clean$rh_unc_2_1, corr_db_clean$amg_vmPFCant_3_1)
+amy32 <- bayes_corr(corr_db_clean$rh_unc_3_1, corr_db_clean$amg_vmPFCant_2_1)
+amy33 <- bayes_corr(corr_db_clean$rh_unc_3_1, corr_db_clean$amg_vmPFCant_3_1)
+```
+
+```{r}
+print("UNC post treatment - Amygdala post treatment")
+summary(amy22, prob = .89)
+print(coda::HPDinterval(as.mcmc(amy22, combine_chains = TRUE), prob = .89))
+
+print("UNC post treatment - Amygdala follow up")
+summary(amy23, prob = .89)
+print(coda::HPDinterval(as.mcmc(amy23, combine_chains = TRUE), prob = .89))
+
+print("UNC follow up - Amygdala post treatment")
+summary(amy32, prob = .89)
+print(coda::HPDinterval(as.mcmc(amy32, combine_chains = TRUE), prob = .89))
+
+print("UNC follow up - Amygdala follow up")
+summary(amy33, prob = .89)
+print(coda::HPDinterval(as.mcmc(amy33, combine_chains = TRUE), prob = .89))
+```
+
+Correlations between changes in Hiipocampus vmPFC connectivity and changes in RH UNC FA
+
+```{r, include=FALSE}
+hipp22 <- bayes_corr(corr_db_clean$rh_unc_2_1, corr_db_clean$hippAnt_vmPFCant_2_1)
+hipp23 <- bayes_corr(corr_db_clean$rh_unc_2_1, corr_db_clean$hippAnt_vmPFCant_3_1)
+hipp32 <- bayes_corr(corr_db_clean$rh_unc_3_1, corr_db_clean$hippAnt_vmPFCant_2_1)
+hipp33 <- bayes_corr(corr_db_clean$rh_unc_3_1, corr_db_clean$hippAnt_vmPFCant_3_1)
+```
+
+```{r}
+print("UNC post treatment - Hiippocampus post treatment")
+summary(hipp22, prob = .89)
+print(coda::HPDinterval(as.mcmc(hipp22, combine_chains = TRUE), prob = .89))
+
+print("UNC post treatment - Hiippocampus follow up")
+summary(hipp23, prob = .89)
+print(coda::HPDinterval(as.mcmc(hipp23, combine_chains = TRUE), prob = .89))
+
+print("UNC follow up - Hiippocampus post treatment")
+summary(hipp32, prob = .89)
+print(coda::HPDinterval(as.mcmc(hipp32, combine_chains = TRUE), prob = .89))
+
+print("UNC follow up - Amygdala follow up")
+summary(hipp33, prob = .89)
+print(coda::HPDinterval(as.mcmc(hipp33, combine_chains = TRUE), prob = .89))
+
+```
+
+# plotting the correlations
+
+```{r}
+library(reshape2)
+colC <- c('amg_vmPFCant_2_1', 'amg_vmPFCant_3_1', 'hippAnt_vmPFCant_2_1', 'hippAnt_vmPFCant_3_1') 
+
+long <- melt(corr_db_clean, id.vars=c("rh_unc_2_1", "rh_unc_3_1"))
+
+connectivety <- subset(long, variable %in% colC)
+
+connect <- separate(data = connectivety, col = variable, into = c("ROI", "frontal", 'session', 'clear'), sep = "_")
+```
+
+```{r}
+ROI.labs <- c('Amygdala', 'Hippocampus')
+names(ROI.labs) <- c('amg', 'hippAnt')
+
+session.labs <- c('Post treatment', 'Follow up')
+names(session.labs) <- c('2', '3')
+
+rho_text <- tibble('label' = c('ρ=0.19', 'ρ=0.23', 'ρ=0.40*', 'ρ=0.25'), 
+                   ROI = c('amg','amg','hippAnt','hippAnt'),
+                   session = c('2','3','2','3'))
+
+ggplot(connect, aes(rh_unc_2_1, value)) + geom_point() + 
+  geom_smooth(level = 0.89, method = "lm") +# theme_minimal() +
+  xlab('WMI change Post treatment compared to baseline') + ylab('Prefortnal connectivety changes compared to baseline') +
+  facet_grid(ROI ~ session, labeller = labeller(session = session.labs, ROI = ROI.labs)) + 
+  geom_text(size = 5, data = rho_text, 
+            mapping = aes(x = -0.02, y = Inf, label = label),
+            hjust   = 1.05,
+            vjust   = 1.5)
+```
+
+```{r}
+rho_text <- tibble('label' = c('ρ=0.15', 'ρ=0.32#', 'ρ=0.54*', 'ρ=0.16'), 
+                   ROI = c('amg','amg','hippAnt','hippAnt'),
+                   session = c('2','3','2','3'))
+
+ggplot(connect, aes(rh_unc_3_1, value)) + geom_point() + 
+  geom_smooth(level = 0.89, method = "lm") + # theme_minimal() +
+  xlab('WMI change follow up compared to baseline') + ylab('Prefortnal connectivety changes compared to baseline') +
+  facet_grid(ROI ~ session, labeller = labeller(session = session.labs, ROI = ROI.labs)) +
+  geom_text(size = 5, data = rho_text, 
+            mapping = aes(x = -0.02, y = Inf, label = label),
+            hjust   = 1.05,
+            vjust   = 1.5)
+```
+```{r}
+colR <- c('Re.experiencing_2', 'Re.experiencing_3')
+
+reexp <- subset(long, variable %in% colR)
+reexp <- separate(data = reexp,  col = variable, into = c('symptom', 'treatment_session'), sep = "_")
+names(reexp)[names(reexp) == "value"] <- "caps"
+
+ree <- melt(reexp, id.vars=c('symptom', 'treatment_session','caps'))
+ree <- separate(data = ree,  col = variable, into = c('hem','tract', 'tract_session','clear'), sep = "_")
+```
+
+```{r}
+
+tract_session.labs <- c('Post treatment', 'Follow up')
+treatment_session.labs <- c('Post treatment', 'Follow up')
+names(treatment_session.labs) <- c('2', '3')
+names(tract_session.labs) <- c('2', '3')
+
+rho_text <- tibble('label' = c('ρ=0.45*', 'ρ=0.41*', 'ρ=0.29', 'ρ=0.3#'), 
+                   treatment_session = c('2','2','3','3'),
+                   tract_session = c('2','3','2','3'))
+
+ggplot(ree, aes(value, caps)) + geom_point() + 
+  geom_smooth(level = 0.89, method = "lm") + #theme_minimal() +
+  xlab('WMI changes comapred to base line') + ylab('Reexperiencing sypotom change compared to baseline') +
+  facet_grid(tract_session ~ treatment_session, 
+             labeller = labeller(tract_session = tract_session.labs, treatment_session = treatment_session.labs)) + 
+  geom_text(size = 5, data = rho_text, 
+            mapping = aes(x = -0.02, y = Inf, label = label),
+            hjust   = 1.05,
+            vjust   = 1.5)
+```
+
+
+```{r}
+hipp_unc <- corr_db_clean[c("rh_unc_2_1","rh_unc_3_1", "hippAnt_vmPFCant_2_1","hippAnt_vmPFCant_3_1")]
+hipp_unc['Sub'] <- 1:24
+hipp_unc1 <- melt(hipp_unc, id.vars = 'Sub', measure.vars = c("rh_unc_2_1","rh_unc_3_1"), variable.name = "wm_ses", value.name = 'unc')
+hipp_unc1 <- rbind(hipp_unc1, hipp_unc1)
+hipp_unc2 <- melt(hipp_unc, id.vars = 'Sub', measure.vars = c("hippAnt_vmPFCant_2_1","hippAnt_vmPFCant_3_1"), variable.name = "fc_ses", value.name = 'fc')
+hipp_unc2 <- rbind(subset(hipp_unc2, fc_ses == 'hippAnt_vmPFCant_2_1'),
+                   hipp_unc2, 
+                   subset(hipp_unc2, fc_ses == 'hippAnt_vmPFCant_3_1')) 
+hipp_unc <- cbind(hipp_unc1,hipp_unc2)
+hipp_unc <- hipp_unc[-4]
+```
+
+```{r}
+ses.labs <- c('rsFC Post treatment', 'rsFC Follow up','WMI Post treatment', 'WMI Follow up')
+names(ses.labs) <- c('hippAnt_vmPFCant_2_1', 'hippAnt_vmPFCant_3_1','rh_unc_2_1', 'rh_unc_3_1')
+
+rho_text <- tibble('label' = c('ρ=0.41*', 'ρ=0.54*', 'ρ=0.25', 'ρ=0.16'),
+                   fc_ses = c('hippAnt_vmPFCant_2_1','hippAnt_vmPFCant_2_1','hippAnt_vmPFCant_3_1','hippAnt_vmPFCant_3_1'),
+                   wm_ses = c('rh_unc_2_1','rh_unc_3_1','rh_unc_2_1','rh_unc_3_1'))
+
+ggplot(hipp_unc, aes(unc, fc)) + geom_point() + 
+  geom_smooth(level = 0.89, method = "lm") + #theme_minimal() +
+  xlab('WMI changes comapred to base line') + ylab('Functional connectivety changes compared to baseline') +
+  facet_grid(fc_ses ~ wm_ses,
+            labeller = as_labeller(ses.labs)) + 
+  geom_text(size = 5, data = rho_text,
+            mapping = aes(x = -0.02, y = Inf, label = label),
+            hjust   = 1.05,
+            vjust   = 1.5)
+```
+
